@@ -60,6 +60,8 @@ pub struct MaterialManager {
 
 impl MaterialManager {
     pub fn new(device: &Device, mode: RendererMode) -> Self {
+        profiling::scope!("MaterialManager::new");
+
         let buffer = mode.into_data(
             || (),
             || WrappedPotBuffer::new(device, 0, 16, BufferUsages::STORAGE, Some("material buffer")),
@@ -84,6 +86,7 @@ impl MaterialManager {
     }
 
     fn ensure_archetype_inner<M: Material>(&mut self, device: &Device, mode: RendererMode) -> &mut PerTypeInfo {
+        profiling::scope!("MaterialManager::ensure_archetype");
         let create_bgl = || {
             mode.into_data(
                 || {
@@ -133,6 +136,8 @@ impl MaterialManager {
                 },
             )
         };
+
+        self.registry.ensure_archetype::<M>();
 
         let ty = TypeId::of::<M>();
 
@@ -303,10 +308,11 @@ impl MaterialManager {
                 .map(|(ty, len)| {
                     let type_info = &self_type_info[&ty];
 
-                    len * (round_up_pot(type_info.texture_count * 4, 16) + round_up_pot(type_info.data_size, 16))
-                        as usize
+                    len.max(1)
+                        * (round_up_pot(type_info.texture_count * 4, 16) + round_up_pot(type_info.data_size, 16))
+                            as usize
                 })
-                .sum();
+                .sum::<usize>();
 
             buffer.ensure_size(device, bytes as u64);
 
@@ -364,21 +370,22 @@ fn write_gpu_materials<M: Material>(
 
     let mut offset = 0_usize;
 
+    let texture_bytes = (M::TEXTURE_COUNT * 4) as usize;
+    let mat_size = round_up_pot(texture_bytes, 16);
+    let data_size = round_up_pot(M::DATA_SIZE, 16) as usize;
+
     for mat in materials {
-        let texture_bytes = (M::TEXTURE_COUNT * 4) as usize;
-        let mat_size = round_up_pot(texture_bytes, 16);
         let texture_slice = bytemuck::cast_slice_mut(&mut dest[offset..offset + texture_bytes]);
         mat.to_textures(texture_slice, translation_fn);
 
         offset += mat_size;
 
-        let data_size = round_up_pot(M::DATA_SIZE, 16) as usize;
         mat.to_data(&mut dest[offset..offset + M::DATA_SIZE as usize]);
 
         offset += data_size;
     }
 
-    offset
+    offset.max(mat_size + data_size)
 }
 
 fn get_material_key<M: Material>(vec_any: &VecAny, index: usize) -> MaterialKeyPair {
